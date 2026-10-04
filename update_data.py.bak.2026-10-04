@@ -1,39 +1,24 @@
 #!/usr/bin/env python3
 """
 WeebWiki Auto-Update Script
-Fetches latest anime (Jikan/MAL) and optionally manga (MangaDex),
-then regenerates data.js. Separately, --chapters fetches top
-manga/manhwa (AniList) + chapter releases (MangaUpdates) into
-manga_chapters.js.
-
-Outputs:
-    data.js           -> const ANIME_DATA = [...]
-    manga_chapters.js -> const MANGA_CHAPTERS = {...}
+Fetches latest anime, manga, and manhwa data from Jikan API and MangaDex API,
+then regenerates data.js for the website.
 
 Usage:
-    python3 update_data.py              # Update anime only (default, 5 pages)
-    python3 update_data.py --manga      # Also fetch manga from MangaDex (3 pages)
-    python3 update_data.py --full       # Full update (24 anime pages + manga)
-    python3 update_data.py --pages 10   # Custom anime pages
-    python3 update_data.py --chapters   # Update chapters (default top 40)
-    python3 update_data.py --chapters --n 60
-    python3 update_data.py --dry-run    # Fetch + parse, no writes
+    python3 update_data.py              # Update anime only (default)
+    python3 update_data.py --manga      # Also fetch manga from MangaDex
+    python3 update_data.py --full       # Full update (all pages, ~6000 anime + manga)
 
-Schedule with Termux (weekly):
-    termux-job-scheduler --job-id 1001 --period-ms 604800000 \
-      --script /sdcard/download/aniwiki/update_data.py
-    # or: termux-setup-cron, then: 0 4 * * 0 python3 /sdcard/download/aniwiki/update_data.py
+Schedule with Termux:
+    termux-job-scheduler or cron to run weekly
 """
 
-import argparse
 import json
 import time
 import urllib.request
 import urllib.error
 import os
 import sys
-import tempfile
-import shutil
 from datetime import datetime
 
 JIKAN_BASE = "https://api.jikan.moe/v4"
@@ -50,29 +35,20 @@ MAX_RETRIES = 3
 def fetch_json(url, retries=MAX_RETRIES):
     for attempt in range(retries):
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": "WeebWiki-Updater/1.0", "Accept": "application/json"})
+            req = urllib.request.Request(url, headers={"User-Agent": "AnimeWiki-Updater/1.0"})
             with urllib.request.urlopen(req, timeout=30) as resp:
-                ctype = resp.headers.get("Content-Type", "")
-                raw = resp.read().decode("utf-8")
-                if "json" not in ctype and not raw.lstrip().startswith(("{", "[")):
-                    print(f"  Unexpected content-type {ctype}, retrying...")
-                    time.sleep(REQUEST_DELAY * (attempt + 1))
-                    continue
-                return json.loads(raw)
+                return json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as e:
             if e.code == 429:
-                try:
-                    wait = int(e.headers.get("Retry-After", "5"))
-                except ValueError:
-                    wait = 5
+                wait = int(e.headers.get("Retry-After", 5))
                 print(f"  Rate limited, waiting {wait}s...")
                 time.sleep(wait)
             else:
                 print(f"  HTTP {e.code}, retrying...")
-                time.sleep(REQUEST_DELAY * (attempt + 1) + attempt * 0.5)
+                time.sleep(REQUEST_DELAY * (attempt + 1))
         except Exception as e:
             print(f"  Error: {e}, retrying...")
-            time.sleep(REQUEST_DELAY * (attempt + 1) + attempt * 0.5)
+            time.sleep(REQUEST_DELAY * (attempt + 1))
     return None
 
 
@@ -192,22 +168,16 @@ def parse_anime(entry):
 
 
 def merge_data(existing, new_entries):
-    existing_map = {a["id"]: a for a in existing if "id" in a}
+    existing_map = {a["id"]: a for a in existing}
     for entry in new_entries:
-        if "id" not in entry:
-            continue
         if entry["id"] in existing_map:
             old = existing_map[entry["id"]]
             for key, val in entry.items():
                 if val is not None and val != "" and val != []:
                     old[key] = val
-            old["_updated"] = datetime.now().strftime("%Y-%m-%d")
         else:
-            entry["_updated"] = datetime.now().strftime("%Y-%m-%d")
             existing_map[entry["id"]] = entry
-    def sort_key(a):
-        return (-(a.get("members") or 0), -(a.get("score") or 0), str(a.get("title") or ""))
-    return sorted(existing_map.values(), key=sort_key)
+    return sorted(existing_map.values(), key=lambda a: -(a.get("members") or 0))
 
 
 def fetch_manga_list(pages=3):
@@ -266,98 +236,34 @@ def parse_manga(entry):
     }
 
 
-def load_existing_js_array(path):
-    if not os.path.exists(path):
-        return []
-    with open(path, "r", encoding="utf-8") as f:
-        content = f.read()
-    try:
-        start = content.index("[")
-        end = content.rindex("]") + 1
-        data = json.loads(content[start:end])
-        if not isinstance(data, list):
-            print(f"Invalid data in {path}, aborting to avoid data loss")
-            sys.exit(2)
-        return data
-    except (ValueError, json.JSONDecodeError) as e:
-        print(f"Could not parse {path}: {e}. Aborting (no overwrite).")
-        sys.exit(2)
-
-
-def load_existing_js_object(path):
-    if not os.path.exists(path):
-        return {}
-    with open(path, "r", encoding="utf-8") as f:
-        content = f.read()
-    try:
-        start = content.index("{")
-        end = content.rindex("}") + 1
-        data = json.loads(content[start:end])
-        return data if isinstance(data, dict) else {}
-    except (ValueError, json.JSONDecodeError):
-        return {}
-
-
-def atomic_write(path, header, payload_obj):
-    if isinstance(payload_obj, list) and len(payload_obj) == 0:
-        print(f"Refusing to write empty list to {path} (abort).")
-        sys.exit(2)
-    if isinstance(payload_obj, dict) and len(payload_obj) == 0:
-        print(f"Warning: writing empty object to {path}")
-    d = os.path.dirname(os.path.abspath(path))
-    fd, tmp = tempfile.mkstemp(prefix=".tmp_", dir=d)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(header)
-            json.dump(payload_obj, f, ensure_ascii=False, separators=(",", ":"))
-            f.write(";\n")
-            f.flush()
-            os.fsync(f.fileno())
-        # backup previous
-        if os.path.exists(path):
-            bak = f"{path}.bak.{datetime.now().strftime('%Y%m%d')}"
-            try:
-                shutil.copy2(path, bak)
-            except OSError:
-                pass
-        os.replace(tmp, path)
-    finally:
-        try:
-            if os.path.exists(tmp):
-                os.remove(tmp)
-        except OSError:
-            pass
-
-
-def main(args=None):
-    ap = argparse.ArgumentParser(description="WeebWiki data updater")
-    ap.add_argument("--manga", action="store_true", help="Also fetch manga from MangaDex")
-    ap.add_argument("--full", action="store_true", help="Full update (24 anime pages + manga)")
-    ap.add_argument("--pages", type=int, default=5, help="Anime top pages (default 5)")
-    ap.add_argument("--manga-pages", type=int, default=3, help="MangaDex pages (default 3)")
-    ap.add_argument("--dry-run", action="store_true", help="Fetch + parse only, no writes")
-    ap.add_argument("--chapters", action="store_true", help="Update chapters instead of anime")
-    ap.add_argument("--n", type=int, default=40, help="Top N for chapters (default 40)")
-    ns = ap.parse_args(args)
-
-    if ns.chapters:
-        fetch_chapters(ns.n, dry_run=ns.dry_run)
-        return
-
-    pages = ns.pages
-    manga_pages = ns.manga_pages
-    fetch_manga = ns.manga
-    if ns.full:
+def main():
+    pages = 5
+    full = False
+    fetch_manga = "--manga" in sys.argv
+    if "--full" in sys.argv:
+        full = True
         pages = 24
-        manga_pages = max(manga_pages, 3)
         fetch_manga = True
+    elif "--pages" in sys.argv:
+        idx = sys.argv.index("--pages")
+        if idx + 1 < len(sys.argv):
+            pages = int(sys.argv[idx + 1])
 
     print("=" * 50)
     print("WeebWiki Data Updater")
     print("=" * 50)
 
-    existing = load_existing_js_array(OUTPUT_FILE)
-    print(f"Loaded {len(existing)} existing entries")
+    existing = []
+    if os.path.exists(OUTPUT_FILE):
+        with open(OUTPUT_FILE, "r", encoding="utf-8") as f:
+            content = f.read()
+            try:
+                start = content.index("[")
+                end = content.rindex("]") + 1
+                existing = json.loads(content[start:end])
+                print(f"Loaded {len(existing)} existing entries")
+            except (ValueError, json.JSONDecodeError):
+                print("Could not parse existing data, starting fresh")
 
     new_entries = fetch_top_anime(pages)
     seasonal = fetch_seasonal_anime()
@@ -366,40 +272,30 @@ def main(args=None):
     seen_ids = set()
     unique_entries = []
     for e in new_entries:
-        mid = e.get("mal_id")
-        if mid is None or mid in seen_ids:
-            continue
-        seen_ids.add(mid)
-        unique_entries.append(e)
+        if e["mal_id"] not in seen_ids:
+            seen_ids.add(e["mal_id"])
+            unique_entries.append(e)
 
     print(f"\nParsing {len(unique_entries)} unique anime entries...")
     parsed = [parse_anime(e) for e in unique_entries]
     parsed = [p for p in parsed if p["title"] and p.get("synopsis")]
-
-    if not parsed and not existing:
-        print("No data fetched and no existing data — aborting.")
-        sys.exit(2)
 
     print("Merging with existing data...")
     merged = merge_data(existing, parsed)
 
     if fetch_manga:
         print("\nFetching manga from MangaDex...")
-        manga_entries = fetch_manga_list(manga_pages)
+        manga_entries = fetch_manga_list(3)
         print(f"Parsing {len(manga_entries)} manga entries...")
         manga_parsed = [parse_manga(e) for e in manga_entries]
         manga_parsed = [m for m in manga_parsed if m["title"] and m.get("synopsis")]
-        if manga_parsed:
-            merged = merge_data(merged, manga_parsed)
-        else:
-            print("No manga parsed, keeping anime-only merge.")
-
-    if ns.dry_run:
-        print(f"[dry-run] Would write {len(merged)} entries to {OUTPUT_FILE}")
-        return
+        merged = merge_data(merged, manga_parsed)
 
     print(f"\nWriting {len(merged)} entries to {OUTPUT_FILE}...")
-    atomic_write(OUTPUT_FILE, "const ANIME_DATA = ", merged)
+    with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
+        f.write("const ANIME_DATA = ")
+        json.dump(merged, f, ensure_ascii=False, separators=(",", ":"))
+        f.write(";\n")
 
     size_mb = os.path.getsize(OUTPUT_FILE) / 1024 / 1024
     print(f"Done! {len(merged)} entries, {size_mb:.1f} MB")
@@ -414,27 +310,11 @@ def anilist_post(query, variables):
                 ANILIST_BASE, data=payload,
                 headers={"Content-Type": "application/json", "Accept": "application/json", "User-Agent": "WeebWiki-Updater/1.0"})
             with urllib.request.urlopen(req, timeout=30) as resp:
-                if resp.status == 429:
-                    wait = int(resp.headers.get("Retry-After", "5"))
-                    print(f"  AniList rate limited, waiting {wait}s...")
-                    time.sleep(wait)
-                    continue
                 data = json.loads(resp.read().decode("utf-8"))
                 if data.get("errors"):
                     print(f"  AniList error: {data['errors'][0].get('message')}")
                     return None
                 return data.get("data")
-        except urllib.error.HTTPError as e:
-            if e.code == 429:
-                try:
-                    wait = int(e.headers.get("Retry-After", "5"))
-                except ValueError:
-                    wait = 5
-                print(f"  AniList rate limited, waiting {wait}s...")
-                time.sleep(wait)
-            else:
-                print(f"  AniList HTTP {e.code}, retrying...")
-                time.sleep(REQUEST_DELAY * (attempt + 1))
         except Exception as e:
             print(f"  AniList error: {e}, retrying...")
             time.sleep(REQUEST_DELAY * (attempt + 1))
@@ -452,12 +332,8 @@ def mu_post(path, payload):
                 return json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as e:
             if e.code == 429:
-                try:
-                    wait = int(e.headers.get("Retry-After", "10"))
-                except ValueError:
-                    wait = 10
-                print(f"  MU rate limited, waiting {wait}s...")
-                time.sleep(wait)
+                print("  MU rate limited, waiting 10s...")
+                time.sleep(10)
             else:
                 print(f"  MU HTTP {e.code}, retrying...")
                 time.sleep(MU_DELAY * (attempt + 1))
@@ -471,31 +347,29 @@ def norm_title(t):
     return "".join(c.lower() for c in (t or "") if c.isalnum())
 
 
-def fetch_chapters(top_n=40, dry_run=False):
+def fetch_chapters(top_n=40):
     print("=" * 50)
     print("WeebWiki Chapter Updater (AniList + MangaUpdates)")
     print("=" * 50)
-
-    try:
-        top_n = int(top_n)
-    except (ValueError, TypeError):
-        print(f"Invalid --n value {top_n!r}, using 40")
-        top_n = 40
-    top_n = max(1, min(top_n, 200))
 
     print(f"Fetching top {top_n} manga/manhwa from AniList...")
     data = anilist_post(
         "query($p:Int,$pp:Int){Page(page:$p,perPage:$pp){media(type:MANGA,isAdult:false,sort:POPULARITY_DESC){id title{romaji english}}}}",
         {"p": 1, "pp": top_n})
-    if not data or not data.get("Page", {}).get("media"):
+    if not data:
         print("Failed to fetch AniList top list")
-        sys.exit(2)
+        return
     entries = data["Page"]["media"]
     print(f"Got {len(entries)} titles")
 
-    out = load_existing_js_object(CHAPTERS_FILE)
-    if out:
-        print(f"Resuming with {len(out)} existing series")
+    out = {}
+    try:
+        with open(CHAPTERS_FILE, "r", encoding="utf-8") as f:
+            content = f.read()
+            out = json.loads(content[content.index("{"):content.rindex("}") + 1])
+            print(f"Resuming with {len(out)} existing series")
+    except (OSError, ValueError):
+        pass
 
     for i, m in enumerate(entries):
         aid = m["id"]
@@ -564,12 +438,21 @@ def fetch_chapters(top_n=40, dry_run=False):
         print(f"  saved {len(out[str(aid)]['ch'])} chapters")
 
     print(f"\nWriting {len(out)} series to {CHAPTERS_FILE}...")
-    if dry_run:
-        print(f"[dry-run] Would write {len(out)} series")
-        return
-    atomic_write(CHAPTERS_FILE, "const MANGA_CHAPTERS = ", out)
-    print(f"Done! {len(out)} series, {os.path.getsize(CHAPTERS_FILE) / 1024:.0f} KB")
+    with open(CHAPTERS_FILE, "w", encoding="utf-8") as f:
+        f.write("const MANGA_CHAPTERS = ")
+        json.dump(out, f, ensure_ascii=False, separators=(",", ":"))
+        f.write(";\n")
+    import os as _os
+    print(f"Done! {len(out)} series, {_os.path.getsize(CHAPTERS_FILE) / 1024:.0f} KB")
 
 
 if __name__ == "__main__":
-    main()
+    if "--chapters" in sys.argv:
+        n = 40
+        if "--n" in sys.argv:
+            idx = sys.argv.index("--n")
+            if idx + 1 < len(sys.argv):
+                n = int(sys.argv[idx + 1])
+        fetch_chapters(n)
+    else:
+        main()

@@ -1,0 +1,1047 @@
+const ANIME = ANIME_DATA;
+const ANIME_BY_ID = new Map(ANIME.map(a => [a.id, a]));
+
+const ALL_GENRES = [...new Set(ANIME.flatMap(a => a.genres || []))].sort();
+const YEARS = [...new Set(ANIME.map(a => a.year).filter(Boolean))].sort((a, b) => b - a);
+
+const state = {
+    theme: localStorage.getItem('theme') || 'dark',
+    searchQuery: '',
+    browseFilters: { genre: '', year: '', type: '', sort: 'members' },
+    browsePage: 1,
+    topPage: 1,
+    currentSection: 'anime',
+    hentaiUnlocked: localStorage.getItem('hentai_unlocked') === 'true',
+};
+
+function init() {
+    document.documentElement.setAttribute('data-theme', state.theme);
+    setupThemeToggle();
+    setupSearch();
+    setupRouter();
+    window.addEventListener('hashchange', render);
+    render();
+}
+
+function setupThemeToggle() {
+    const btn = document.getElementById('theme-toggle');
+    btn.addEventListener('click', () => {
+        state.theme = state.theme === 'dark' ? 'light' : 'dark';
+        document.documentElement.setAttribute('data-theme', state.theme);
+        localStorage.setItem('theme', state.theme);
+    });
+}
+
+function getSection() {
+    const hash = location.hash.slice(1) || '/';
+    const path = hash.split('?')[0];
+    const parts = path.split('/').filter(Boolean);
+    if (parts[0] === 'anime') return 'anime';
+    if (parts[0] === 'manga') return 'manga';
+    if (parts[0] === 'manhwa') return 'manhwa';
+    if (parts[0] === 'doujin') return 'doujin';
+    if (parts[0] === 'hentai') return 'hentai';
+    return 'anime';
+}
+
+function setupSearch() {
+    const input = document.getElementById('search-input');
+    const dropdown = document.getElementById('search-dropdown');
+    let debounce;
+
+    input.addEventListener('input', () => {
+        clearTimeout(debounce);
+        debounce = setTimeout(async () => {
+            const q = input.value.trim();
+            if (q.length < 2) { dropdown.classList.remove('active'); return; }
+            const section = getSection();
+            let results = [];
+
+            if (section === 'anime') {
+                results = searchAnime(q, 8);
+            } else if (section === 'hentai') {
+                try {
+                    const data = await API.doujinSearch(q, 1);
+                    const galleries = Array.isArray(data) ? data : (data.result || []);
+                    results = galleries.slice(0, 8).map(API.parseDoujin);
+                } catch { results = []; }
+            } else {
+                try {
+                    const data = await API.mangaSearch(q, 8);
+                    results = data.data.map(API.parseManga).filter(Boolean);
+                } catch { results = []; }
+            }
+
+            const cardFn = (section === 'hentai') ? doujinCard : (section === 'anime' ? animeCard : mangaCard);
+            const routePrefix = section === 'hentai' ? 'doujin' : section;
+
+            dropdown.innerHTML = results.map(a => `
+                <div class="search-dropdown-item" onclick="location.hash='#/${routePrefix}/${a.id}'">
+                    ${a.img ? `<img src="${a.img}" alt="" loading="lazy">` : '<div style="width:40px;height:56px;background:var(--glass-border);border-radius:6px"></div>'}
+                    <div>
+                        <div class="sd-title">${esc(a.title)}</div>
+                        <div class="sd-meta">${a.type || ''} ${a.year ? '· ' + a.year : ''}</div>
+                    </div>
+                </div>
+            `).join('');
+            dropdown.classList.add('active');
+        }, 150);
+    });
+
+    input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+            const q = input.value.trim();
+            if (q) {
+                const section = getSection();
+                location.hash = `#/${section}/search/${encodeURIComponent(q)}`;
+            }
+            dropdown.classList.remove('active');
+        }
+        if (e.key === 'Escape') dropdown.classList.remove('active');
+    });
+
+    document.addEventListener('click', (e) => {
+        if (!e.target.closest('.search-box')) dropdown.classList.remove('active');
+    });
+}
+
+function setupRouter() {
+    document.querySelectorAll('[data-link]').forEach(el => {
+        el.addEventListener('click', (e) => {
+            e.preventDefault();
+            location.hash = el.getAttribute('href');
+        });
+    });
+}
+
+function getRoute() {
+    const hash = location.hash.slice(1) || '/';
+    const path = hash.split('?')[0];
+    const parts = path.split('/').filter(Boolean);
+
+    if (parts[0] === 'anime' && parts[1] && parts[1] !== 'search' && parts[1] !== 'browse') return { page: 'anime-article', id: parseInt(parts[1]) };
+    if (parts[0] === 'manga' && parts[1] && parts[1] !== 'search' && parts[1] !== 'browse') return { page: 'manga-article', id: parts[1] };
+    if (parts[0] === 'doujin' && parts[1] && parts[1] !== 'search' && parts[1] !== 'browse') return { page: 'doujin-article', id: parseInt(parts[1]) };
+    if (parts[0] === 'anime' && parts[1] === 'search' && parts[2]) return { page: 'manga-search', section: 'anime', query: decodeURIComponent(parts[2]) };
+    if (parts[0] === 'manga' && parts[1] === 'search' && parts[2]) return { page: 'manga-search', section: 'manga', query: decodeURIComponent(parts[2]) };
+    if (parts[0] === 'manhwa' && parts[1] === 'search' && parts[2]) return { page: 'manga-search', section: 'manhwa', query: decodeURIComponent(parts[2]) };
+    if (parts[0] === 'doujin' && parts[1] === 'search' && parts[2]) return { page: 'manga-search', section: 'doujin', query: decodeURIComponent(parts[2]) };
+    if (parts[0] === 'hentai' && parts[1] === 'search' && parts[2]) return { page: 'manga-search', section: 'hentai', query: decodeURIComponent(parts[2]) };
+    if (parts[0] === 'anime' && parts[1] === 'browse') return { page: 'manga-browse', section: 'anime' };
+    if (parts[0] === 'manga' && parts[1] === 'browse') return { page: 'manga-browse', section: 'manga' };
+    if (parts[0] === 'manhwa' && parts[1] === 'browse') return { page: 'manga-browse', section: 'manhwa' };
+    if (parts[0] === 'doujin' && parts[1] === 'browse') return { page: 'manga-browse', section: 'doujin' };
+    if (parts[0] === 'hentai' && parts[1] === 'browse') return { page: 'manga-browse', section: 'hentai' };
+    if (parts[0] === 'search' && parts[1]) return { page: 'search', query: decodeURIComponent(parts[1]) };
+    if (parts[0] === 'browse') return { page: 'browse' };
+    if (parts[0] === 'top') return { page: 'top' };
+    if (parts[0] === 'anime') return { page: 'anime' };
+    if (parts[0] === 'manga') return { page: 'manga' };
+    if (parts[0] === 'manhwa') return { page: 'manhwa' };
+    if (parts[0] === 'doujin') return { page: 'doujin' };
+    if (parts[0] === 'hentai') return { page: 'hentai' };
+    return { page: 'landing' };
+}
+
+function render() {
+    const route = getRoute();
+    const app = document.getElementById('app');
+    window.scrollTo(0, 0);
+
+    document.getElementById('header-search').style.display = route.page === 'landing' ? 'none' : 'flex';
+
+    switch (route.page) {
+        case 'landing': renderLanding(app); break;
+        case 'anime': renderAnimeHome(app); break;
+        case 'anime-article': renderAnimeArticle(app, route.id); break;
+        case 'manga': renderMangaHome(app); break;
+        case 'manga-article': renderMangaArticle(app, route.id); break;
+        case 'manhwa': renderManhwaHome(app); break;
+        case 'doujin': renderDoujinHome(app); break;
+        case 'doujin-article': renderDoujinArticle(app, route.id); break;
+        case 'hentai': renderHentaiHome(app); break;
+        case 'manga-search': renderMangaSearch(app, route.section, route.query); break;
+        case 'manga-browse': renderMangaBrowse(app, route.section); break;
+        case 'search': renderSearch(app, route.query); break;
+        case 'browse': renderBrowse(app); break;
+        case 'top': renderTop(app); break;
+        default: renderLanding(app);
+    }
+}
+
+function renderLanding(app) {
+    app.innerHTML = `
+        <section class="landing">
+            <h1 class="landing-title">WeebWiki</h1>
+            <p class="landing-subtitle">Your encyclopedia for anime, manga, manhwa & more</p>
+            <div class="landing-grid">
+                <a href="#/anime" class="landing-card landing-anime" data-link>
+                    <div class="landing-card-icon">🎌</div>
+                    <div class="landing-card-title">Anime</div>
+                    <div class="landing-card-desc">TV, Movie, OVA, ONA</div>
+                    <div class="landing-card-count">${ANIME.length.toLocaleString()}+ titles</div>
+                </a>
+                <a href="#/manga" class="landing-card landing-manga" data-link>
+                    <div class="landing-card-icon">📖</div>
+                    <div class="landing-card-title">Manga</div>
+                    <div class="landing-card-desc">Japanese comics</div>
+                    <div class="landing-card-count">60,000+ titles</div>
+                </a>
+                <a href="#/manhwa" class="landing-card landing-manhwa" data-link>
+                    <div class="landing-card-icon">📕</div>
+                    <div class="landing-card-title">Manhwa</div>
+                    <div class="landing-card-desc">Korean webtoons</div>
+                    <div class="landing-card-count">20,000+ titles</div>
+                </a>
+                <a href="#/doujin" class="landing-card landing-doujin" data-link>
+                    <div class="landing-card-icon">🎨</div>
+                    <div class="landing-card-title">Doujin</div>
+                    <div class="landing-card-desc">SFW fan works</div>
+                    <div class="landing-card-count">10,000+ titles</div>
+                </a>
+                <div class="landing-card landing-hentai" id="hentai-card" onclick="handleHentaiClick(event)">
+                    <div class="landing-card-icon">🔞</div>
+                    <div class="landing-card-title">Hentai</div>
+                    <div class="landing-card-desc">Adult content (18+)</div>
+                    <div class="landing-card-count">100,000+ titles</div>
+                    <label class="hentai-toggle" onclick="event.stopPropagation()">
+                        <input type="checkbox" id="hentai-toggle" ${state.hentaiUnlocked ? 'checked' : ''} onchange="toggleHentai(this.checked)">
+                        <span class="hentai-toggle-track"><span class="hentai-toggle-thumb"></span></span>
+                    </label>
+                </div>
+            </div>
+        </section>
+    `;
+}
+
+function handleHentaiClick(event) {
+    if (state.hentaiUnlocked) {
+        location.hash = '#/hentai';
+    } else {
+        showGate();
+    }
+}
+
+function toggleHentai(checked) {
+    if (checked) {
+        showGate();
+    } else {
+        state.hentaiUnlocked = false;
+        localStorage.removeItem('hentai_unlocked');
+    }
+}
+
+function showGate() {
+    document.getElementById('gate-modal').classList.add('active');
+}
+
+function closeGate() {
+    document.getElementById('gate-modal').classList.remove('active');
+    const toggle = document.getElementById('hentai-toggle');
+    if (toggle) toggle.checked = false;
+}
+
+function confirmGate() {
+    const remember = document.getElementById('gate-remember').checked;
+    state.hentaiUnlocked = true;
+    if (remember) localStorage.setItem('hentai_unlocked', 'true');
+    document.getElementById('gate-modal').classList.remove('active');
+    const toggle = document.getElementById('hentai-toggle');
+    if (toggle) toggle.checked = true;
+    location.hash = '#/hentai';
+}
+
+async function renderMangaHome(app) {
+    app.innerHTML = `<div class="loading"><div class="spinner"></div></div>`;
+    try {
+        const data = await API.mangaList(20, 0);
+        const manga = data.data.map(API.parseManga).filter(Boolean);
+        const topManga = manga.filter(m => m.synopsis).slice(0, 10);
+
+        app.innerHTML = `
+            <section class="section" style="margin-top:0">
+                <div class="section-header">
+                    <h2 class="section-title">📖 Popular Manga</h2>
+                    <a href="#/manga/browse" class="section-link" data-link>Browse all →</a>
+                </div>
+                <div class="anime-grid">${topManga.map(m => mangaCard(m)).join('')}</div>
+            </section>
+            <section class="section">
+                <div class="section-header">
+                    <h2 class="section-title">🏷️ Browse by Genre</h2>
+                </div>
+                <div class="genre-cloud">${['Action','Adventure','Comedy','Drama','Fantasy','Horror','Mystery','Romance','Sci-Fi','Slice of Life','Sports','Supernatural'].map(g => `<span class="genre-tag" onclick="location.hash='#/manga/browse?genre=${g}'">${g}</span>`).join('')}</div>
+            </section>
+        `;
+    } catch (e) {
+        app.innerHTML = `<div class="empty-state"><div class="empty-icon">📖</div><h2>Failed to load manga</h2><p>${e.message}</p></div>`;
+    }
+}
+
+async function renderManhwaHome(app) {
+    app.innerHTML = `<div class="loading"><div class="spinner"></div></div>`;
+    try {
+        const data = await API.mangaList(20, 0, { countryOfOrigin: 'KR' });
+        const manhwa = data.data.map(API.parseManga).filter(Boolean);
+        const topManhwa = manhwa.filter(m => m.synopsis).slice(0, 10);
+
+        app.innerHTML = `
+            <section class="section" style="margin-top:0">
+                <div class="section-header">
+                    <h2 class="section-title">📕 Popular Manhwa</h2>
+                    <a href="#/manhwa/browse" class="section-link" data-link>Browse all →</a>
+                </div>
+                <div class="anime-grid">${topManhwa.map(m => mangaCard(m)).join('')}</div>
+            </section>
+            <section class="section">
+                <div class="section-header">
+                    <h2 class="section-title">🏷️ Browse by Genre</h2>
+                </div>
+                <div class="genre-cloud">${['Action','Adventure','Comedy','Drama','Fantasy','Horror','Mystery','Romance','Sci-Fi','Slice of Life','Sports','Supernatural'].map(g => `<span class="genre-tag" onclick="location.hash='#/manhwa/browse?genre=${g}'">${g}</span>`).join('')}</div>
+            </section>
+        `;
+    } catch (e) {
+        app.innerHTML = `<div class="empty-state"><div class="empty-icon">📕</div><h2>Failed to load manhwa</h2><p>${e.message}</p></div>`;
+    }
+}
+
+async function renderDoujinHome(app) {
+    app.innerHTML = `<div class="loading"><div class="spinner"></div></div>`;
+    try {
+        const data = await API.mangaList(20, 0, { tagId: API.DOUJINSHI_TAG_ID });
+        const doujins = data.data.map(API.parseManga).filter(Boolean);
+        const topDoujins = doujins.filter(d => d.synopsis).slice(0, 10);
+
+        app.innerHTML = `
+            <section class="section" style="margin-top:0">
+                <div class="section-header">
+                    <h2 class="section-title">🎨 Popular Doujinshi (SFW)</h2>
+                    <a href="#/doujin/browse" class="section-link" data-link>Browse all →</a>
+                </div>
+                <div class="anime-grid">${topDoujins.map(m => mangaCard(m)).join('')}</div>
+            </section>
+            <section class="section">
+                <div class="section-header">
+                    <h2 class="section-title">🏷️ Browse by Genre</h2>
+                </div>
+                <div class="genre-cloud">${['Action','Adventure','Comedy','Drama','Fantasy','Horror','Mystery','Romance','Sci-Fi','Slice of Life','Sports','Supernatural'].map(g => `<span class="genre-tag" onclick="location.hash='#/doujin/browse?genre=${g}'">${g}</span>`).join('')}</div>
+            </section>
+        `;
+    } catch (e) {
+        app.innerHTML = `<div class="empty-state"><div class="empty-icon">🎨</div><h2>Failed to load doujins</h2><p>${e.message}</p></div>`;
+    }
+}
+
+async function renderHentaiHome(app) {
+    if (!state.hentaiUnlocked) {
+        showGate();
+        return;
+    }
+    app.innerHTML = `<div class="loading"><div class="spinner"></div></div>`;
+    try {
+        const data = await API.doujinPopular(1);
+        const galleries = Array.isArray(data) ? data : (data.result || []);
+        const hentai = galleries.map(API.parseDoujin);
+        const topHentai = hentai.filter(h => h.title).slice(0, 10);
+
+        app.innerHTML = `
+            <section class="section" style="margin-top:0">
+                <div class="section-header">
+                    <h2 class="section-title">🔞 Popular Hentai</h2>
+                    <a href="#/hentai/browse" class="section-link" data-link>Browse all →</a>
+                </div>
+                <div class="anime-grid">${topHentai.map(h => doujinCard(h)).join('')}</div>
+            </section>
+        `;
+    } catch (e) {
+        app.innerHTML = `<div class="empty-state"><div class="empty-icon">🔞</div><h2>Failed to load hentai</h2><p>${e.message}</p></div>`;
+    }
+}
+
+async function renderMangaSearch(app, section, query) {
+    app.innerHTML = `<div class="loading"><div class="spinner"></div></div>`;
+    try {
+        let results = [];
+        if (section === 'hentai') {
+            const data = await API.doujinSearch(query, 1);
+            const galleries = Array.isArray(data) ? data : (data.result || []);
+            results = galleries.map(API.parseDoujin);
+        } else {
+            const data = await API.mangaSearch(query, 30);
+            results = data.data.map(API.parseManga).filter(Boolean);
+        }
+
+        const cardFn = section === 'hentai' ? doujinCard : mangaCard;
+        const routePrefix = section === 'hentai' ? 'doujin' : section;
+
+        app.innerHTML = `
+            <section class="section" style="margin-top:0">
+                <div class="section-header">
+                    <h2 class="section-title">Search results for "${esc(query)}"</h2>
+                </div>
+                <p class="results-count">${results.length} result${results.length !== 1 ? 's' : ''} found</p>
+                ${results.length ? `<div class="anime-grid">${results.map(m => cardFn(m)).join('')}</div>` : `<div class="empty-state"><div class="empty-icon">🔍</div><h2>No results found</h2><p>Try a different search term</p></div>`}
+            </section>
+        `;
+    } catch (e) {
+        app.innerHTML = `<div class="empty-state"><div class="empty-icon">🔍</div><h2>Search failed</h2><p>${e.message}</p></div>`;
+    }
+}
+
+const ANILIST_STATUS = { FINISHED: 'Finished', RELEASING: 'Releasing', NOT_YET_RELEASED: 'Not yet released', HIATUS: 'Hiatus', CANCELLED: 'Cancelled' };
+
+async function renderMangaBrowse(app, section) {
+    const params = new URLSearchParams(location.hash.split('?')[1] || '');
+    const genre = params.get('genre') || '';
+    const status = params.get('status') || '';
+    const sort = params.get('sort') || 'followedCount';
+
+    app.innerHTML = `<div class="loading"><div class="spinner"></div></div>`;
+    try {
+        let items = [];
+        let isHentai = section === 'hentai';
+        if (isHentai) {
+            const data = await API.doujinPopular(1);
+            const galleries = Array.isArray(data) ? data : (data.result || []);
+            items = galleries.map(API.parseDoujin).filter(Boolean);
+            if (genre) items = items.filter(h => (h.tags || []).some(t => t.toLowerCase().includes(genre.toLowerCase())));
+        } else {
+            let filters = {};
+            if (section === 'manhwa') filters.countryOfOrigin = 'KR';
+            if (section === 'doujin') filters.tagId = API.DOUJINSHI_TAG_ID;
+            if (genre) filters.genre = genre;
+            if (status && ANILIST_STATUS[status]) filters.status = status;
+
+            const data = await API.mangaList(30, 0, filters);
+            items = data.data.map(API.parseManga).filter(Boolean);
+        }
+
+        switch (sort) {
+            case 'title': items.sort((a, b) => a.title.localeCompare(b.title)); break;
+            case 'year': items.sort((a, b) => (b.year || 0) - (a.year || 0)); break;
+            default: break;
+        }
+
+        const cardFn = isHentai ? doujinCard : mangaCard;
+        const titleMap = { manga: 'Manga', manhwa: 'Manhwa', doujin: 'Doujinshi (SFW)', hentai: 'Hentai' };
+        const iconMap = { manga: '📖', manhwa: '📕', doujin: '🎨', hentai: '🔞' };
+
+        app.innerHTML = `
+            <section class="section" style="margin-top:0">
+                <div class="section-header">
+                    <h2 class="section-title">${iconMap[section] || '📖'} Browse ${titleMap[section] || 'Manga'}</h2>
+                </div>
+                <div class="browse-filters">
+                    <div class="filter-group">
+                        <label>Genre</label>
+                        <select onchange="updateMangaBrowse('${section}', 'genre', this.value)">
+                            <option value="">All</option>
+                            ${['Action','Adventure','Comedy','Drama','Fantasy','Horror','Mystery','Romance','Sci-Fi','Slice of Life','Sports','Supernatural'].map(g => `<option value="${g}" ${g === genre ? 'selected' : ''}>${g}</option>`).join('')}
+                        </select>
+                    </div>
+                    <div class="filter-group">
+                        <label>Status</label>
+                        <select onchange="updateMangaBrowse('${section}', 'status', this.value)">
+                            <option value="">All</option>
+                            ${Object.entries(ANILIST_STATUS).map(([v, l]) => `<option value="${v}" ${v === status ? 'selected' : ''}>${l}</option>`).join('')}
+                        </select>
+                    </div>
+                    <div class="filter-group">
+                        <label>Sort</label>
+                        <select onchange="updateMangaBrowse('${section}', 'sort', this.value)">
+                            <option value="followedCount" ${sort === 'followedCount' ? 'selected' : ''}>Popularity</option>
+                            <option value="title" ${sort === 'title' ? 'selected' : ''}>Title</option>
+                            <option value="year" ${sort === 'year' ? 'selected' : ''}>Year</option>
+                        </select>
+                    </div>
+                </div>
+                <p class="results-count">${items.length} items found</p>
+                ${items.length ? `<div class="anime-grid">${items.map(m => cardFn(m)).join('')}</div>` : '<div class="empty-state"><div class="empty-icon">📭</div><h2>No items found</h2><p>Try adjusting your filters</p></div>'}
+            </section>
+        `;
+    } catch (e) {
+        app.innerHTML = `<div class="empty-state"><div class="empty-icon">📖</div><h2>Failed to load</h2><p>${e.message}</p></div>`;
+    }
+}
+
+function renderChapterSection(manga) {
+    const raw = (typeof MANGA_CHAPTERS !== 'undefined' && MANGA_CHAPTERS[String(manga.id)]) || null;
+    const entry = raw ? { ...raw, ch: (raw.ch || []).filter(c => c.c !== null && c.c !== undefined && String(c.c).trim() !== '') } : null;
+    if (!entry || !entry.ch || !entry.ch.length) {
+        return `<div style="margin-top:24px"><h3 style="font-size:0.8rem;text-transform:uppercase;letter-spacing:1px;color:var(--text-muted);margin-bottom:12px">Chapters</h3>
+            <p style="font-size:0.85rem;color:var(--text-secondary)">${manga.chapters ? `Total: ${manga.chapters} chapters` : 'Chapter list unavailable for this title.'}${manga.volumes ? ` · ${manga.volumes} volumes` : ''}</p></div>`;
+    }
+    const show = 15;
+    const rows = entry.ch.map(c => `
+        <a class="ch-row" href="${entry.u}" target="_blank" rel="noopener">
+            <span class="ch-num">Ch ${esc(String(c.c ?? '?'))}</span>
+            ${c.v ? `<span class="ch-vol">Vol ${esc(String(c.v))}</span>` : ''}
+            ${c.g ? `<span class="ch-group">${esc(c.g)}</span>` : ''}
+            ${c.d ? `<span class="ch-date">${esc(c.d)}</span>` : ''}
+        </a>`).join('');
+    return `<div style="margin-top:24px"><h3 style="font-size:0.8rem;text-transform:uppercase;letter-spacing:1px;color:var(--text-muted);margin-bottom:12px">Chapters (${entry.ch.length}) · updated ${esc(entry.updated)}</h3>
+        <div class="ch-list" id="ch-list">${rows}</div>
+        ${entry.ch.length > show ? `<button class="synopsis-toggle" id="ch-toggle" onclick="toggleChapters()">Show all ${entry.ch.length} chapters</button>` : ''}
+    </div>
+    <style>#ch-list .ch-row:nth-child(n+${show + 1}){display:none}#ch-list.expanded .ch-row{display:flex}</style>`;
+}
+
+function toggleChapters() {
+    const list = document.getElementById('ch-list');
+    const btn = document.getElementById('ch-toggle');
+    if (!list || !btn) return;
+    const expanded = list.classList.toggle('expanded');
+    btn.textContent = expanded ? 'Show less' : `Show all ${list.children.length} chapters`;
+}
+
+function updateMangaBrowse(section, key, value) {
+    const params = new URLSearchParams(location.hash.split('?')[1] || '');
+    if (value) params.set(key, value); else params.delete(key);
+    location.hash = `#/${section}/browse${params.toString() ? '?' + params.toString() : ''}`;
+}
+
+function renderAnimeHome(app) {
+    const topRated = [...ANIME].filter(a => a.score).sort((a, b) => b.score - a.score).slice(0, 10);
+    const popular = [...ANIME].sort((a, b) => (b.members || 0) - (a.members || 0)).slice(0, 10);
+    const recent = [...ANIME].filter(a => a.year >= 2023).sort((a, b) => (b.members || 0) - (a.members || 0)).slice(0, 10);
+
+    app.innerHTML = `
+        <section class="section" style="margin-top:0">
+            <div class="section-header">
+                <h2 class="section-title">🏆 Top Rated Anime</h2>
+                <a href="#/top" class="section-link" data-link>View all →</a>
+            </div>
+            <div class="anime-grid">${topRated.map(a => animeCard(a)).join('')}</div>
+        </section>
+        <section class="section">
+            <div class="section-header">
+                <h2 class="section-title">🔥 Most Popular</h2>
+            </div>
+            <div class="anime-grid">${popular.map(a => animeCard(a)).join('')}</div>
+        </section>
+        <section class="section">
+            <div class="section-header">
+                <h2 class="section-title">📅 Recent & Trending</h2>
+            </div>
+            <div class="anime-grid">${recent.map(a => animeCard(a)).join('')}</div>
+        </section>
+        <section class="section">
+            <div class="section-header">
+                <h2 class="section-title">🏷️ Browse by Genre</h2>
+                <a href="#/browse" class="section-link" data-link>All filters →</a>
+            </div>
+            <div class="genre-cloud">${ALL_GENRES.slice(0, 30).map(g => `<span class="genre-tag" onclick="location.hash='#/browse?genre=${encodeURIComponent(g)}'">${esc(g)}</span>`).join('')}</div>
+        </section>
+    `;
+}
+
+function renderAnimeArticle(app, id) {
+    const anime = ANIME_BY_ID.get(id);
+    if (!anime) {
+        app.innerHTML = `<div class="empty-state"><div class="empty-icon">😕</div><h2>Anime not found</h2></div>`;
+        return;
+    }
+
+    const related = findRelated(anime);
+
+    app.innerHTML = `
+        <div class="article">
+            <aside class="article-sidebar">
+                <div class="article-cover">
+                    ${anime.img ? `<img src="${anime.img}" alt="${esc(anime.title)}" loading="lazy">` : '<div style="aspect-ratio:3/4;background:var(--glass-border);display:flex;align-items:center;justify-content:center;font-size:3rem">🎬</div>'}
+                </div>
+                <div class="infobox">
+                    ${anime.score ? `<div class="infobox-row"><span class="infobox-label">Score</span><span class="infobox-value score">⭐ ${anime.score}</span></div>` : ''}
+                    ${anime.rank ? `<div class="infobox-row"><span class="infobox-label">Rank</span><span class="infobox-value rank">#${anime.rank}</span></div>` : ''}
+                    ${anime.popularity ? `<div class="infobox-row"><span class="infobox-label">Popularity</span><span class="infobox-value">#${anime.popularity}</span></div>` : ''}
+                    ${anime.members ? `<div class="infobox-row"><span class="infobox-label">Members</span><span class="infobox-value">${anime.members.toLocaleString()}</span></div>` : ''}
+                    ${anime.favorites ? `<div class="infobox-row"><span class="infobox-label">Favorites</span><span class="infobox-value">${anime.favorites.toLocaleString()}</span></div>` : ''}
+                    ${anime.type ? `<div class="infobox-row"><span class="infobox-label">Type</span><span class="infobox-value">${anime.type}</span></div>` : ''}
+                    ${anime.episodes ? `<div class="infobox-row"><span class="infobox-label">Episodes</span><span class="infobox-value">${anime.episodes}</span></div>` : ''}
+                    ${anime.status ? `<div class="infobox-row"><span class="infobox-label">Status</span><span class="infobox-value">${anime.status}</span></div>` : ''}
+                    ${anime.season && anime.year ? `<div class="infobox-row"><span class="infobox-label">Season</span><span class="infobox-value">${anime.season} ${anime.year}</span></div>` : anime.year ? `<div class="infobox-row"><span class="infobox-label">Year</span><span class="infobox-value">${anime.year}</span></div>` : ''}
+                    ${anime.rating ? `<div class="infobox-row"><span class="infobox-label">Rating</span><span class="infobox-value">${anime.rating}</span></div>` : ''}
+                    ${anime.aired_from ? `<div class="infobox-row"><span class="infobox-label">Aired</span><span class="infobox-value">${formatDate(anime.aired_from)}${anime.aired_to ? ' - ' + formatDate(anime.aired_to) : ''}</span></div>` : ''}
+                    ${(anime.studios || []).length ? `<div class="infobox-row"><span class="infobox-label">Studios</span><span class="infobox-value">${anime.studios.map(esc).join(', ')}</span></div>` : ''}
+                    ${(anime.producers || []).length ? `<div class="infobox-row"><span class="infobox-label">Producers</span><span class="infobox-value">${anime.producers.map(esc).join(', ')}</span></div>` : ''}
+                </div>
+            </aside>
+            <div class="article-main">
+                <h1>${esc(anime.title)}</h1>
+                <div class="alt-titles">
+                    ${anime.title_en && anime.title_en !== anime.title ? `<div>English: ${esc(anime.title_en)}</div>` : ''}
+                    ${anime.title_jp ? `<div>Japanese: ${esc(anime.title_jp)}</div>` : ''}
+                </div>
+                <div class="article-meta">
+                    ${anime.type ? `<span class="meta-badge type" onclick="location.hash='#/browse?type=${anime.type}'" style="cursor:pointer">${anime.type}</span>` : ''}
+                    ${anime.status ? `<span class="meta-badge status" onclick="location.hash='#/browse?status=${anime.status}'" style="cursor:pointer">${anime.status}</span>` : ''}
+                    ${anime.rating ? `<span class="meta-badge rating" onclick="location.hash='#/browse?rating=${anime.rating}'" style="cursor:pointer">${anime.rating}</span>` : ''}
+                    ${anime.episodes ? `<span class="meta-badge" onclick="location.hash='#/browse?episodes=${anime.episodes}'" style="cursor:pointer">${anime.episodes} episodes</span>` : ''}
+                </div>
+                ${anime.synopsis ? `<div class="synopsis"><h3>Synopsis</h3><div class="synopsis-text" id="synopsis-text">${esc(anime.synopsis)}</div><button class="synopsis-toggle" id="synopsis-toggle" onclick="toggleSynopsis()">Read more</button></div>` : ''}
+                ${(anime.genres || []).length ? `<div class="genre-list">${anime.genres.map(g => `<span class="genre-tag" onclick="location.hash='#/browse?genre=${encodeURIComponent(g)}'" style="cursor:pointer">${esc(g)}</span>`).join('')}</div>` : ''}
+                ${(anime.themes || []).length ? `<div class="genre-list">${anime.themes.map(t => `<span class="genre-tag" style="border-color:var(--pink);color:var(--pink);cursor:pointer" onclick="location.hash='#/browse?theme=${encodeURIComponent(t)}'">${esc(t)}</span>`).join('')}</div>` : ''}
+                ${(anime.demographics || []).length ? `<div class="genre-list">${anime.demographics.map(d => `<span class="genre-tag" style="border-color:var(--blue);color:var(--blue);cursor:pointer" onclick="location.hash='#/browse?demographic=${encodeURIComponent(d)}'">${esc(d)}</span>`).join('')}</div>` : ''}
+                ${anime.trailer_youtube ? `<div style="margin-top:24px"><h3 style="font-size:0.8rem;text-transform:uppercase;letter-spacing:1px;color:var(--text-muted);margin-bottom:12px">Trailer</h3><div id="trailer-container" style="border-radius:var(--radius-sm);overflow:hidden;aspect-ratio:16/9;position:relative;cursor:pointer;background:#000" onclick="loadTrailer('${anime.trailer_youtube}')"><img src="https://img.youtube.com/vi/${anime.trailer_youtube}/hqdefault.jpg" style="width:100%;height:100%;object-fit:cover;opacity:0.8" alt="Trailer thumbnail"><div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center"><div style="width:64px;height:64px;border-radius:50%;background:rgba(255,0,0,0.9);display:flex;align-items:center;justify-content:center;transition:transform 0.2s"><svg width="28" height="28" viewBox="0 0 24 24" fill="white"><path d="M8 5v14l11-7z"/></svg></div></div></div></div>` : ''}
+                <div id="watch-section" style="margin-top:24px"><div class="loading" style="padding:24px"><div class="spinner"></div></div></div>
+                ${related.length ? `
+                    <div class="related-section">
+                        <h2>Related Anime</h2>
+                        <div class="anime-grid">${related.slice(0, 6).map(a => animeCard(a)).join('')}</div>
+                    </div>
+                ` : ''}
+            </div>
+        </div>
+    `;
+    loadWatchSection(anime.title_en || anime.title);
+}
+
+async function loadWatchSection(title) {
+    const box = document.getElementById('watch-section');
+    if (!box) return;
+    try {
+        const m = await API.animeWatch(title);
+        if (!m || (!m.streamingEpisodes?.length && !m.trailer && !m.externalLinks?.length)) {
+            box.innerHTML = '';
+            return;
+        }
+        const eps = (m.streamingEpisodes || []).slice(0, 12);
+        box.innerHTML = `
+            <h3 style="font-size:0.8rem;text-transform:uppercase;letter-spacing:1px;color:var(--text-muted);margin-bottom:12px">Watch</h3>
+            ${eps.length ? `<div class="ep-grid">${eps.map(e => `
+                <a class="ep-card" href="${e.url}" target="_blank" rel="noopener">
+                    ${e.thumbnail ? `<img src="${e.thumbnail}" alt="" loading="lazy">` : ''}
+                    <div class="ep-title">${esc(e.title)}</div>
+                    <div class="ep-site">${esc(e.site)}</div>
+                </a>`).join('')}</div>` : ''}
+            ${m.externalLinks?.length ? `<div class="read-links">${m.externalLinks.map(l => `<a class="genre-tag" href="${l.url}" target="_blank" rel="noopener">▶ ${esc(l.site)}</a>`).join('')}</div>` : ''}
+        `;
+    } catch {
+        box.innerHTML = '';
+    }
+}
+
+async function renderMangaArticle(app, id) {
+    app.innerHTML = `<div class="loading"><div class="spinner"></div></div>`;
+    try {
+        const data = await API.mangaDetails(id);
+        const manga = API.parseManga(data.data);
+
+        app.innerHTML = `
+            <div class="article">
+                <aside class="article-sidebar">
+                    <div class="article-cover">
+                        ${manga.img ? `<img src="${manga.img}" alt="${esc(manga.title)}" loading="lazy">` : '<div style="aspect-ratio:3/4;background:var(--glass-border);display:flex;align-items:center;justify-content:center;font-size:3rem">📖</div>'}
+                    </div>
+                    <div class="infobox">
+                        ${manga.type ? `<div class="infobox-row"><span class="infobox-label">Type</span><span class="infobox-value">${manga.type}</span></div>` : ''}
+                        ${manga.status ? `<div class="infobox-row"><span class="infobox-label">Status</span><span class="infobox-value">${manga.status}</span></div>` : ''}
+                        ${manga.year ? `<div class="infobox-row"><span class="infobox-label">Year</span><span class="infobox-value">${manga.year}</span></div>` : ''}
+                        ${manga.chapters ? `<div class="infobox-row"><span class="infobox-label">Chapters</span><span class="infobox-value">${manga.chapters}</span></div>` : ''}
+                        ${manga.authors.length ? `<div class="infobox-row"><span class="infobox-label">Author</span><span class="infobox-value">${manga.authors.map(esc).join(', ')}</span></div>` : ''}
+                        ${manga.artists.length ? `<div class="infobox-row"><span class="infobox-label">Artist</span><span class="infobox-value">${manga.artists.map(esc).join(', ')}</span></div>` : ''}
+                    </div>
+                </aside>
+                <div class="article-main">
+                    <h1>${esc(manga.title)}</h1>
+                    <div class="alt-titles">
+                        ${manga.title_en && manga.title_en !== manga.title ? `<div>English: ${esc(manga.title_en)}</div>` : ''}
+                        ${manga.title_jp ? `<div>Japanese: ${esc(manga.title_jp)}</div>` : ''}
+                    </div>
+                    <div class="article-meta">
+                        ${manga.type ? `<span class="meta-badge type">${manga.type}</span>` : ''}
+                        ${manga.status ? `<span class="meta-badge status">${manga.status}</span>` : ''}
+                    </div>
+                    ${manga.synopsis ? `<div class="synopsis"><h3>Synopsis</h3><div class="synopsis-text" id="synopsis-text">${esc(manga.synopsis)}</div><button class="synopsis-toggle" id="synopsis-toggle" onclick="toggleSynopsis()">Read more</button></div>` : ''}
+                    ${manga.genres.length ? `<div class="genre-list">${manga.genres.map(g => `<span class="genre-tag">${esc(g)}</span>`).join('')}</div>` : ''}
+                    ${manga.themes.length ? `<div class="genre-list">${manga.themes.map(t => `<span class="genre-tag" style="border-color:var(--pink);color:var(--pink)">${esc(t)}</span>`).join('')}</div>` : ''}
+                    ${renderChapterSection(manga)}
+                    <div style="margin-top:24px"><h3 style="font-size:0.8rem;text-transform:uppercase;letter-spacing:1px;color:var(--text-muted);margin-bottom:12px">Read</h3><div class="read-links">
+                        ${manga.siteUrl ? `<a class="genre-tag" href="${manga.siteUrl}" target="_blank" rel="noopener">📖 AniList</a>` : ''}
+                        <a class="genre-tag" href="https://mangadex.org/search?q=${encodeURIComponent(manga.title)}" target="_blank" rel="noopener">📖 MangaDex</a>
+                        <a class="genre-tag" href="https://mangaplus.shueisha.co.jp/search_result?search=${encodeURIComponent(manga.title)}" target="_blank" rel="noopener">📖 MangaPlus</a>
+                    </div></div>
+                </div>
+            </div>
+        `;
+    } catch (e) {
+        app.innerHTML = `<div class="empty-state"><div class="empty-icon">📖</div><h2>Manga not found</h2><p>${e.message}</p></div>`;
+    }
+}
+
+async function renderDoujinArticle(app, id) {
+    app.innerHTML = `<div class="loading"><div class="spinner"></div></div>`;
+    try {
+        const data = await API.doujinDetails(id);
+        const doujin = API.parseDoujin(data);
+        window._doujinPages = doujin.pages || [];
+
+        app.innerHTML = `
+            <div class="article">
+                <aside class="article-sidebar">
+                    <div class="article-cover">
+                        ${doujin.img ? `<img src="${doujin.img}" alt="${esc(doujin.title)}" loading="lazy">` : '<div style="aspect-ratio:3/4;background:var(--glass-border);display:flex;align-items:center;justify-content:center;font-size:3rem">🎨</div>'}
+                    </div>
+                    <div class="infobox">
+                        <div class="infobox-row"><span class="infobox-label">Pages</span><span class="infobox-value">${doujin.chapters || '?'}</span></div>
+                        <div class="infobox-row"><span class="infobox-label">Favorites</span><span class="infobox-value">${doujin.favorites || 0}</span></div>
+                        ${doujin.year ? `<div class="infobox-row"><span class="infobox-label">Year</span><span class="infobox-value">${doujin.year}</span></div>` : ''}
+                    </div>
+                </aside>
+                <div class="article-main">
+                    <h1>${esc(doujin.title)}</h1>
+                    <div class="article-meta">
+                        <span class="meta-badge rating">🔞 Adult</span>
+                    </div>
+                    ${doujin.pages?.length ? `
+                        <div style="margin:16px 0">
+                            <button class="gate-btn gate-btn-confirm" onclick="openReader()">📖 Read now (${doujin.pages.length} pages)</button>
+                        </div>
+                        <div class="preview-strip">${doujin.pages.slice(0, 8).map((p, i) => `<img src="https://t.nhentai.net/${p.thumb}" alt="p${i + 1}" loading="lazy" onclick="openReader(${i})">`).join('')}</div>
+                    ` : ''}
+                    ${doujin.tags.length ? `<div class="genre-list">${doujin.tags.slice(0, 15).map(t => `<span class="genre-tag" style="border-color:var(--red);color:var(--red)">${esc(t)}</span>`).join('')}</div>` : ''}
+                </div>
+            </div>
+        `;
+    } catch (e) {
+        app.innerHTML = `<div class="empty-state"><div class="empty-icon">🎨</div><h2>Doujin not found</h2><p>${e.message}</p></div>`;
+    }
+}
+
+function renderSearch(app, query) {
+    const results = searchAnime(query, 100);
+    app.innerHTML = `
+        <section class="section" style="margin-top:0">
+            <div class="section-header">
+                <h2 class="section-title">Search results for "${esc(query)}"</h2>
+            </div>
+            <p class="results-count">${results.length} result${results.length !== 1 ? 's' : ''} found</p>
+            ${results.length ? `<div class="anime-grid">${results.map(a => animeCard(a)).join('')}</div>` : `<div class="empty-state"><div class="empty-icon">🔍</div><h2>No results found</h2><p>Try a different search term</p></div>`}
+        </section>
+    `;
+}
+
+function renderBrowse(app) {
+    const params = new URLSearchParams(location.hash.split('?')[1] || '');
+    const genre = params.get('genre') || state.browseFilters.genre;
+    const year = params.get('year') || state.browseFilters.year;
+    const type = params.get('type') || state.browseFilters.type;
+    const status = params.get('status') || state.browseFilters.status;
+    const rating = params.get('rating') || state.browseFilters.rating;
+    const theme = params.get('theme') || state.browseFilters.theme;
+    const demographic = params.get('demographic') || state.browseFilters.demographic;
+    const sort = params.get('sort') || state.browseFilters.sort;
+
+    let filtered = [...ANIME];
+    if (genre) filtered = filtered.filter(a => (a.genres || []).includes(genre));
+    if (year) filtered = filtered.filter(a => a.year === parseInt(year));
+    if (type) filtered = filtered.filter(a => a.type === type);
+    if (status) filtered = filtered.filter(a => a.status === status);
+    if (rating) filtered = filtered.filter(a => a.rating === rating);
+    if (theme) filtered = filtered.filter(a => (a.themes || []).includes(theme));
+    if (demographic) filtered = filtered.filter(a => (a.demographics || []).includes(demographic));
+
+    switch (sort) {
+        case 'score': filtered.sort((a, b) => (b.score || 0) - (a.score || 0)); break;
+        case 'rank': filtered.sort((a, b) => (a.rank || 99999) - (b.rank || 99999)); break;
+        case 'title': filtered.sort((a, b) => a.title.localeCompare(b.title)); break;
+        case 'year': filtered.sort((a, b) => (b.year || 0) - (a.year || 0)); break;
+        default: filtered.sort((a, b) => (b.members || 0) - (a.members || 0));
+    }
+
+    const perPage = 30;
+    const totalPages = Math.ceil(filtered.length / perPage);
+    const page = state.browsePage;
+    const start = (page - 1) * perPage;
+    const items = filtered.slice(start, start + perPage);
+
+    app.innerHTML = `
+        <section class="section" style="margin-top:0">
+            <div class="section-header">
+                <h2 class="section-title">Browse Anime</h2>
+            </div>
+            <div class="browse-filters">
+                <div class="filter-group">
+                    <label>Genre</label>
+                    <select onchange="updateBrowse('genre', this.value)">
+                        <option value="">All</option>
+                        ${ALL_GENRES.map(g => `<option value="${esc(g)}" ${g === genre ? 'selected' : ''}>${esc(g)}</option>`).join('')}
+                    </select>
+                </div>
+                <div class="filter-group">
+                    <label>Year</label>
+                    <select onchange="updateBrowse('year', this.value)">
+                        <option value="">All</option>
+                        ${YEARS.map(y => `<option value="${y}" ${y === parseInt(year) ? 'selected' : ''}>${y}</option>`).join('')}
+                    </select>
+                </div>
+                <div class="filter-group">
+                    <label>Type</label>
+                    <select onchange="updateBrowse('type', this.value)">
+                        <option value="">All</option>
+                        ${['TV', 'Movie', 'OVA', 'ONA', 'Special'].map(t => `<option value="${t}" ${t === type ? 'selected' : ''}>${t}</option>`).join('')}
+                    </select>
+                </div>
+                <div class="filter-group">
+                    <label>Status</label>
+                    <select onchange="updateBrowse('status', this.value)">
+                        <option value="">All</option>
+                        ${['Finished Airing', 'Currently Airing', 'Not yet aired'].map(s => `<option value="${s}" ${s === status ? 'selected' : ''}>${s}</option>`).join('')}
+                    </select>
+                </div>
+                <div class="filter-group">
+                    <label>Rating</label>
+                    <select onchange="updateBrowse('rating', this.value)">
+                        <option value="">All</option>
+                        ${['G - All Ages', 'PG - Children', 'PG-13 - Teens 13 or older', 'R - 17+ (violence & profanity)', 'R+ - Mild Nudity', 'Rx - Hentai'].map(r => `<option value="${r}" ${r === rating ? 'selected' : ''}>${r}</option>`).join('')}
+                    </select>
+                </div>
+                <div class="filter-group">
+                    <label>Sort</label>
+                    <select onchange="updateBrowse('sort', this.value)">
+                        <option value="members" ${sort === 'members' ? 'selected' : ''}>Popularity</option>
+                        <option value="score" ${sort === 'score' ? 'selected' : ''}>Score</option>
+                        <option value="rank" ${sort === 'rank' ? 'selected' : ''}>Rank</option>
+                        <option value="year" ${sort === 'year' ? 'selected' : ''}>Year</option>
+                        <option value="title" ${sort === 'title' ? 'selected' : ''}>Title</option>
+                    </select>
+                </div>
+            </div>
+            <p class="results-count">${filtered.length.toLocaleString()} anime found</p>
+            ${items.length ? `<div class="list-view">${items.map(a => listItem(a)).join('')}</div>` : '<div class="empty-state"><div class="empty-icon">📭</div><h2>No anime found</h2><p>Try adjusting your filters</p></div>'}
+            ${totalPages > 1 ? pagination(page, totalPages, 'browse') : ''}
+        </section>
+    `;
+}
+
+function renderTop(app) {
+    const ranked = [...ANIME].filter(a => a.score).sort((a, b) => b.score - a.score);
+    const perPage = 30;
+    const totalPages = Math.ceil(ranked.length / perPage);
+    const page = state.topPage;
+    const start = (page - 1) * perPage;
+    const items = ranked.slice(start, start + perPage);
+
+    app.innerHTML = `
+        <section class="section" style="margin-top:0">
+            <div class="section-header">
+                <h2 class="section-title">🏆 Top Rated Anime</h2>
+            </div>
+            <p class="results-count">${ranked.length.toLocaleString()} anime with scores</p>
+            <div class="list-view">${items.map((a, i) => listItem(a, start + i + 1)).join('')}</div>
+            ${totalPages > 1 ? pagination(page, totalPages, 'top') : ''}
+        </section>
+    `;
+}
+
+function updateBrowse(key, value) {
+    state.browseFilters[key] = value;
+    state.browsePage = 1;
+    const params = new URLSearchParams();
+    if (state.browseFilters.genre) params.set('genre', state.browseFilters.genre);
+    if (state.browseFilters.year) params.set('year', state.browseFilters.year);
+    if (state.browseFilters.type) params.set('type', state.browseFilters.type);
+    if (state.browseFilters.sort) params.set('sort', state.browseFilters.sort);
+    location.hash = `#/browse${params.toString() ? '?' + params.toString() : ''}`;
+}
+
+function goPage(page, type) {
+    if (type === 'browse') state.browsePage = page;
+    else state.topPage = page;
+    render();
+}
+
+function pagination(current, total, type) {
+    const maxVisible = 7;
+    let start = Math.max(1, current - 3);
+    let end = Math.min(total, start + maxVisible - 1);
+    start = Math.max(1, end - maxVisible + 1);
+
+    let pages = '';
+    if (start > 1) pages += `<button class="page-btn" onclick="goPage(1, '${type}')">1</button><span style="color:var(--text-muted)">...</span>`;
+    for (let i = start; i <= end; i++) {
+        pages += `<button class="page-btn ${i === current ? 'active' : ''}" onclick="goPage(${i}, '${type}')">${i}</button>`;
+    }
+    if (end < total) pages += `<span style="color:var(--text-muted)">...</span><button class="page-btn" onclick="goPage(${total}, '${type}')">${total}</button>`;
+
+    return `<div class="pagination">
+        <button class="page-btn" onclick="goPage(${current - 1}, '${type}')" ${current <= 1 ? 'disabled' : ''}>←</button>
+        ${pages}
+        <button class="page-btn" onclick="goPage(${current + 1}, '${type}')" ${current >= total ? 'disabled' : ''}>→</button>
+    </div>`;
+}
+
+function searchAnime(query, limit = 20) {
+    const q = query.toLowerCase();
+    const results = [];
+    for (const a of ANIME) {
+        const title = a.title.toLowerCase();
+        const titleEn = (a.title_en || '').toLowerCase();
+        const titleJp = (a.title_jp || '').toLowerCase();
+        if (title.includes(q) || titleEn.includes(q) || titleJp.includes(q)) {
+            results.push(a);
+            if (results.length >= limit) break;
+        }
+    }
+    return results;
+}
+
+function findRelated(anime) {
+    const related = [];
+    const animeGenres = new Set(anime.genres || []);
+    for (const a of ANIME) {
+        if (a.id === anime.id) continue;
+        const shared = (a.genres || []).filter(g => animeGenres.has(g)).length;
+        if (shared > 0) related.push({ ...a, _shared: shared });
+    }
+    return related.sort((a, b) => b._shared - a._shared || (b.members || 0) - (a.members || 0));
+}
+
+function animeCard(a) {
+    return `
+        <div class="anime-card" onclick="location.hash='#/anime/${a.id}'">
+            <div class="anime-card-img">
+                ${a.img ? `<img src="${a.img}" alt="${esc(a.title)}" loading="lazy">` : '<div style="width:100%;height:100%;background:var(--glass-border);display:flex;align-items:center;justify-content:center;font-size:2rem">🎬</div>'}
+                ${a.rank ? `<span class="anime-card-rank">#${a.rank}</span>` : ''}
+                ${a.score ? `<span class="anime-card-score">⭐ ${a.score}</span>` : ''}
+            </div>
+            <div class="anime-card-body">
+                <div class="anime-card-title">${esc(a.title)}</div>
+                <div class="anime-card-meta">${a.type || 'TV'}${a.year ? ' · ' + a.year : ''}</div>
+            </div>
+        </div>
+    `;
+}
+
+function mangaCard(m) {
+    return `
+        <div class="anime-card" onclick="location.hash='#/manga/${m.id}'">
+            <div class="anime-card-img">
+                ${m.img ? `<img src="${m.img}" alt="${esc(m.title)}" loading="lazy">` : '<div style="width:100%;height:100%;background:var(--glass-border);display:flex;align-items:center;justify-content:center;font-size:2rem">📖</div>'}
+            </div>
+            <div class="anime-card-body">
+                <div class="anime-card-title">${esc(m.title)}</div>
+                <div class="anime-card-meta">${m.type || 'Manga'}${m.year ? ' · ' + m.year : ''}</div>
+            </div>
+        </div>
+    `;
+}
+
+function doujinCard(d) {
+    return `
+        <div class="anime-card" onclick="location.hash='#/doujin/${d.id}'">
+            <div class="anime-card-img">
+                ${d.img ? `<img src="${d.img}" alt="${esc(d.title)}" loading="lazy">` : '<div style="width:100%;height:100%;background:var(--glass-border);display:flex;align-items:center;justify-content:center;font-size:2rem">🎨</div>'}
+            </div>
+            <div class="anime-card-body">
+                <div class="anime-card-title">${esc(d.title)}</div>
+                <div class="anime-card-meta">${d.chapters || '?'} pages</div>
+            </div>
+        </div>
+    `;
+}
+
+function listItem(a, rankOverride) {
+    const rank = rankOverride || a.rank;
+    return `
+        <div class="list-item" onclick="location.hash='#/anime/${a.id}'">
+            ${rank ? `<span class="list-item-rank">#${rank}</span>` : ''}
+            ${a.img ? `<img src="${a.img}" alt="${esc(a.title)}" loading="lazy">` : ''}
+            <div class="list-item-info">
+                <div class="list-item-title">${esc(a.title)}</div>
+                <div class="list-item-meta">${a.type || 'TV'}${a.year ? ' · ' + a.year : ''} · ${(a.genres || []).slice(0, 3).map(esc).join(', ')}</div>
+            </div>
+            ${a.score ? `<span class="list-item-score">⭐ ${a.score}</span>` : ''}
+        </div>
+    `;
+}
+
+function formatDate(d) {
+    if (!d) return '';
+    try {
+        const date = new Date(d);
+        return date.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+    } catch { return d; }
+}
+
+function toggleSynopsis() {
+    const text = document.getElementById('synopsis-text');
+    const btn = document.getElementById('synopsis-toggle');
+    if (!text || !btn) return;
+    if (text.classList.contains('expanded')) {
+        text.classList.remove('expanded');
+        btn.textContent = 'Read more';
+    } else {
+        text.classList.add('expanded');
+        btn.textContent = 'Read less';
+    }
+}
+
+function loadTrailer(youtubeId) {
+    const container = document.getElementById('trailer-container');
+    if (!container) return;
+    container.innerHTML = `<iframe src="https://www.youtube.com/embed/${youtubeId}?autoplay=1&rel=0" style="width:100%;height:100%;border:0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>`;
+}
+
+let _reader = null;
+
+function openReader(startIndex = 0) {
+    const pages = window._doujinPages || [];
+    if (!pages.length) return;
+    _reader = { pages, i: Math.min(startIndex, pages.length - 1) };
+    showReaderPage();
+    document.addEventListener('keydown', readerKeys);
+}
+
+function readerFullUrl(page) {
+    return `https://i.nhentai.net/${page.path}`;
+}
+
+function showReaderPage() {
+    if (!_reader) return;
+    let overlay = document.getElementById('reader-overlay');
+    if (!overlay) {
+        overlay = document.createElement('div');
+        overlay.id = 'reader-overlay';
+        overlay.innerHTML = `
+            <div class="reader-top"><span id="reader-count"></span><button class="reader-close" onclick="closeReader()">✕</button></div>
+            <button class="reader-nav reader-prev" onclick="readerNav(-1)">‹</button>
+            <img id="reader-img" alt="page">
+            <button class="reader-nav reader-next" onclick="readerNav(1)">›</button>`;
+        document.body.appendChild(overlay);
+    }
+    const img = document.getElementById('reader-img');
+    img.src = readerFullUrl(_reader.pages[_reader.i]);
+    document.getElementById('reader-count').textContent = `${_reader.i + 1} / ${_reader.pages.length}`;
+    overlay.classList.add('active');
+    document.body.style.overflow = 'hidden';
+}
+
+function readerNav(dir) {
+    if (!_reader) return;
+    _reader.i = (_reader.i + dir + _reader.pages.length) % _reader.pages.length;
+    showReaderPage();
+}
+
+function readerKeys(e) {
+    if (!_reader) return;
+    if (e.key === 'ArrowRight') readerNav(1);
+    if (e.key === 'ArrowLeft') readerNav(-1);
+    if (e.key === 'Escape') closeReader();
+}
+
+function closeReader() {
+    _reader = null;
+    document.getElementById('reader-overlay')?.classList.remove('active');
+    document.body.style.overflow = '';
+    document.removeEventListener('keydown', readerKeys);
+}
+
+function esc(str) {
+    if (!str) return '';
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+}
+
+document.addEventListener('DOMContentLoaded', init);

@@ -3,12 +3,23 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AnimeWiki — Anime Encyclopedia</title>
+    <meta name="description" content="WeebWiki — encyclopedia for anime, manga, manhwa, doujin & hentai. Browse top rated, search, chapters, trailers.">
+    <meta name="theme-color" content="#0a0a0f" media="(prefers-color-scheme: dark)">
+    <meta name="theme-color" content="#f0f0f5" media="(prefers-color-scheme: light)">
+    <meta name="color-scheme" content="dark light">
+    <meta property="og:title" content="WeebWiki — Anime, Manga & More">
+    <meta property="og:description" content="Your encyclopedia for anime, manga, manhwa, doujin & more.">
+    <meta property="og:type" content="website">
+    <meta name="twitter:card" content="summary">
+    <title>WeebWiki — Anime, Manga & More</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="preconnect" href="https://cdn.myanimelist.net" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+    <noscript><link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet"></noscript>
     <link rel="stylesheet" href="style.css">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎌</text></svg>">
+    <link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎌</text></svg>">
 </head>
 <body>
     <div class="bg-orbs">
@@ -21,28 +32,47 @@
         <div class="header-inner">
             <a href="#/" class="logo" data-link>
                 <span class="logo-icon">🎌</span>
-                <span class="logo-text">AnimeWiki</span>
+                <span class="logo-text">WeebWiki</span>
             </a>
-            <div class="search-box">
-                <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <div class="search-box" id="header-search" role="search">
+                <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
                     <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
                 </svg>
-                <input type="text" id="search-input" placeholder="Search 15,000+ anime..." autocomplete="off">
-                <div id="search-dropdown" class="search-dropdown"></div>
+                <label class="sr-only" for="search-input">Search anime, manga, manhwa</label>
+                <input type="text" id="search-input" placeholder="Search anime, manga, manhwa..." autocomplete="off" aria-label="Search anime, manga, manhwa" aria-expanded="false" aria-controls="search-dropdown" role="combobox" aria-autocomplete="list">
+                <div id="search-dropdown" class="search-dropdown" role="listbox" aria-label="Search suggestions"></div>
             </div>
-            <button id="theme-toggle" class="theme-toggle" aria-label="Toggle theme">
+            <a href="#/bookmarks" class="section-link" data-link aria-label="My library" title="My library" style="font-size:1.2rem">★</a>
+            <button id="theme-toggle" class="theme-toggle" aria-label="Toggle theme" aria-pressed="false">
                 <span class="toggle-track"><span class="toggle-thumb"></span></span>
             </button>
         </div>
     </header>
 
-    <main id="app" class="app"></main>
+    <main id="app" class="app" aria-live="polite"></main>
+
+    <div id="gate-modal" class="gate-modal" role="dialog" aria-modal="true" aria-labelledby="gate-title">
+        <div class="gate-content glass">
+            <div class="gate-icon" aria-hidden="true">🔞</div>
+            <h2 id="gate-title">Adult Content</h2>
+            <p>This section contains adult content (18+). You must be of legal age to view this content.</p>
+            <label class="gate-remember">
+                <input type="checkbox" id="gate-remember"> Don't show again
+            </label>
+            <div class="gate-actions">
+                <button class="gate-btn gate-btn-cancel" onclick="closeGate()">Cancel</button>
+                <button class="gate-btn gate-btn-confirm" onclick="confirmGate()">I am 18+</button>
+            </div>
+        </div>
+    </div>
 
     <footer class="footer">
-        <p>AnimeWiki — Data from MyAnimeList via <a href="https://huggingface.co/datasets/moviebrain01/anime-dataset-2025" target="_blank" rel="noopener">HuggingFace</a></p>
+        <p>WeebWiki — Data from MyAnimeList, AniList & nhentai · <a href="#/bookmarks" data-link>My Library</a></p>
     </footer>
 
-    <script src="data.js"></script>
-    <script src="app.js"></script>
+    <script src="data.js" defer></script>
+    <script src="manga_chapters.js" defer></script>
+    <script src="api.js" defer></script>
+    <script src="app.js" defer></script>
 </body>
 </html>

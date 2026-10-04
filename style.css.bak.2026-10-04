@@ -1053,21 +1053,6 @@ button { cursor: pointer; border: none; background: none; font-family: inherit; 
 .reader-next { right: 16px; }
 
 .ch-list { display: flex; flex-direction: column; gap: 6px; }
-.ch-list.collapsed .ch-row:nth-child(n+16) { display: none; }
-.ch-list.expanded .ch-row { display: flex; }
-
-/* Screen-reader only */
-.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
-
-/* Accessible focus */
-:focus-visible { outline: 2px solid var(--accent-light); outline-offset: 2px; }
-button:focus:not(:focus-visible), a:focus:not(:focus-visible), [tabindex]:focus:not(:focus-visible) { outline: none; }
-
-/* Library card accent */
-.landing-bookmarks:hover { border-color: var(--gold); box-shadow: 0 8px 32px rgba(245,158,11,0.2); }
-
-/* Pagination wraps on small screens */
-.pagination { flex-wrap: wrap; }
 
 .ch-row {
     display: flex;
@@ -1102,29 +1087,8 @@ button:focus:not(:focus-visible), a:focus:not(:focus-visible), [tabindex]:focus:
     .article-cover { max-width: 250px; margin: 0 auto 20px; }
     .browse-filters { flex-direction: column; }
     .filter-group { width: 100%; }
-    .filter-group select { flex: 1; min-width: 0; }
+    .filter-group select { flex: 1; }
     .landing { padding: 40px 16px 24px; }
     .landing-grid { grid-template-columns: repeat(2, 1fr); gap: 12px; }
     .landing-card { padding: 20px 16px; }
-    .ch-group, .ch-date { display: none; }
-    .gate-content { padding: 28px 20px; }
-    .reader-nav { width: 40px; height: 40px; font-size: 1.2rem; }
-    .reader-prev { left: 8px; }
-    .reader-next { right: 8px; }
-    main.app { scroll-margin-top: 72px; }
-}
-
-@media (prefers-reduced-motion: reduce) {
-    html { scroll-behavior: auto; }
-    *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
-    .orb { display: none; }
-    .spinner { animation: none; border-top-color: var(--text-muted); }
-}
-
-@media print {
-    .bg-orbs, .header, .gate-modal, #reader-overlay, .browse-filters, .pagination, .preview-strip, .read-links { display: none !important; }
-    body { background: #fff; color: #000; }
-    .synopsis-text { max-height: none !important; }
-    .synopsis-text::after { display: none !important; }
-    .anime-grid { grid-template-columns: repeat(3, 1fr); }
 }
